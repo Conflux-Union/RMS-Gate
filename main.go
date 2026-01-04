@@ -101,6 +101,12 @@ func (r *RMSWhitelist) init() error {
 		} else {
 			r.loadBalancer = lb
 			r.log.Info("Load balancer enabled")
+
+			// Link load balancer to dynamic server manager
+			if r.dynamicServer != nil {
+				r.dynamicServer.SetLoadBalancer(lb)
+				r.log.V(1).Info("Linked load balancer to dynamic server manager")
+			}
 		}
 	}
 

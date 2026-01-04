@@ -163,57 +163,71 @@ func (lb *LoadBalancer) checkAllBackends() {
 	}
 	lb.mu.RUnlock()
 
+	for _, server := range servers {
+		lb.checkServerBackends(server)
+	}
+}
+
+func (lb *LoadBalancer) checkServerBackends(server *ServerInfo) {
 	timeout := time.Duration(lb.cfg.HealthCheck.DialTimeoutSeconds) * time.Second
 	if timeout == 0 {
 		timeout = 3 * time.Second
 	}
 
-	for _, server := range servers {
-		for _, backend := range server.Backends() {
-			if backend.IsDisabled() {
-				continue
+	for _, backend := range server.Backends() {
+		if backend.IsDisabled() {
+			continue
+		}
+
+		latency, err := backend.MCPing(timeout)
+		backend.SetLastCheckTime(time.Now())
+
+		if err != nil {
+			backend.RecordHealthCheckFailure()
+			if backend.FailCount() >= int32(lb.cfg.HealthCheck.UnhealthyAfterFailures) {
+				if backend.IsHealthy() {
+					backend.SetHealthy(false)
+					lb.log.Info("Backend marked unhealthy",
+						"server", server.Name(),
+						"backend", backend.Addr,
+						"failCount", backend.FailCount(),
+						"error", err)
+				}
 			}
+		} else {
+			backend.RecordLatency(latency)
+			jitter := backend.Jitter()
+			lb.history.Record(backend.Addr, float64(latency.Milliseconds()), jitter)
 
-			latency, err := backend.MCPing(timeout)
-			backend.SetLastCheckTime(time.Now())
-
-			if err != nil {
-				backend.RecordHealthCheckFailure()
-				if backend.FailCount() >= int32(lb.cfg.HealthCheck.UnhealthyAfterFailures) {
-					if backend.IsHealthy() {
-						backend.SetHealthy(false)
-						lb.log.Info("Backend marked unhealthy",
-							"server", server.Name(),
-							"backend", backend.Addr,
-							"failCount", backend.FailCount(),
-							"error", err)
-					}
+			wasUnhealthy := !backend.IsHealthy()
+			backend.RecordHealthCheckSuccess()
+			if wasUnhealthy {
+				if backend.SuccessCount() >= int32(lb.cfg.HealthCheck.HealthyAfterSuccesses) {
+					backend.SetHealthy(true)
+					backend.ResetTrust()
+					backend.ResetSuccessCount()
+					lb.log.Info("Backend recovered",
+						"server", server.Name(),
+						"backend", backend.Addr,
+						"latency", latency,
+						"trust", backend.TrustCoeff(),
+						"requiredSuccesses", lb.cfg.HealthCheck.HealthyAfterSuccesses)
 				}
 			} else {
-				backend.RecordLatency(latency)
-				jitter := backend.Jitter()
-				lb.history.Record(backend.Addr, float64(latency.Milliseconds()), jitter)
-
-				wasUnhealthy := !backend.IsHealthy()
-				backend.RecordHealthCheckSuccess()
-				if wasUnhealthy {
-					if backend.SuccessCount() >= int32(lb.cfg.HealthCheck.HealthyAfterSuccesses) {
-						backend.SetHealthy(true)
-						backend.ResetTrust()
-						backend.ResetSuccessCount()
-						lb.log.Info("Backend recovered",
-							"server", server.Name(),
-							"backend", backend.Addr,
-							"latency", latency,
-							"trust", backend.TrustCoeff(),
-							"requiredSuccesses", lb.cfg.HealthCheck.HealthyAfterSuccesses)
-					}
-				} else {
-					backend.IncreaseTrust()
-				}
+				backend.IncreaseTrust()
 			}
 		}
 	}
+}
+
+// TriggerHealthCheck immediately checks health of all backends for a specific server
+func (lb *LoadBalancer) TriggerHealthCheck(serverName string) {
+	server := lb.GetServer(serverName)
+	if server == nil {
+		return
+	}
+	lb.log.V(1).Info("Triggering immediate health check", "server", serverName)
+	lb.checkServerBackends(server)
 }
 
 func (lb *LoadBalancer) GetServer(name string) *ServerInfo {

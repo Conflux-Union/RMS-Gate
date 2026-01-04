@@ -69,11 +69,17 @@ type Manager struct {
 	proxy  *proxy.Proxy
 	mcs    *mcsmanager.Client
 	cfg    *Config
+	lb     LoadBalancerInterface
 
 	mu              sync.Mutex
 	startingServers map[string]*startingServer
 	shutdownTimers  map[string]*time.Timer
 	serverConfigs   map[string]*ShutdownConfig
+}
+
+// LoadBalancerInterface defines the interface for triggering health checks
+type LoadBalancerInterface interface {
+	TriggerHealthCheck(serverName string)
 }
 
 func NewManager(ctx context.Context, log logr.Logger, p *proxy.Proxy, mcs *mcsmanager.Client, cfg *Config) *Manager {
@@ -93,6 +99,11 @@ func NewManager(ctx context.Context, log logr.Logger, p *proxy.Proxy, mcs *mcsma
 	m.log.Info("DynamicServerManager initialized", "autoStart", cfg.AutoStartServers)
 	go m.periodicIdleCheck()
 	return m
+}
+
+// SetLoadBalancer sets the load balancer reference for triggering health checks
+func (m *Manager) SetLoadBalancer(lb LoadBalancerInterface) {
+	m.lb = lb
 }
 
 func (m *Manager) IsAutoStartServer(name string) bool {
@@ -143,6 +154,12 @@ func (m *Manager) EnsureServerRunning(serverName string) bool {
 		m.log.Error(nil, "Server failed to start", "server", serverName)
 		s.result = false
 		return false
+	}
+
+	// Trigger immediate health check if load balancer is available
+	if m.lb != nil {
+		m.log.V(1).Info("Triggering load balancer health check", "server", serverName)
+		m.lb.TriggerHealthCheck(serverName)
 	}
 
 	m.log.Info("Server is now running", "server", serverName)
