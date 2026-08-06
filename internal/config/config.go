@@ -18,6 +18,20 @@ type Config struct {
 	DynamicServer     *DynamicServerConfig `json:"dynamicServer"`
 	Permission        *PermissionConfig    `json:"permission"`
 	LoadBalancer      *LoadBalancerConfig  `json:"loadBalancer"`
+	VersionRouter     *VersionRouterConfig `json:"versionRouter"`
+}
+
+type VersionRouterConfig struct {
+	Enabled               bool                 `json:"enabled"`
+	MsgUnsupportedVersion string               `json:"msgUnsupportedVersion"`
+	Groups                []*VersionGroupConfig `json:"groups"`
+}
+
+type VersionGroupConfig struct {
+	Name          string   `json:"name"`
+	Protocols     []int    `json:"protocols"`
+	DefaultServer string   `json:"defaultServer"`
+	Servers       []string `json:"servers"`
 }
 
 type LoadBalancerConfig struct {

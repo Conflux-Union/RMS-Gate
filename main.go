@@ -22,6 +22,7 @@ import (
 	"github.com/RMS-Server/RMS-Gate/internal/loadbalancer"
 	"github.com/RMS-Server/RMS-Gate/internal/mcsmanager"
 	"github.com/RMS-Server/RMS-Gate/internal/permission"
+	"github.com/RMS-Server/RMS-Gate/internal/versionrouter"
 	"github.com/RMS-Server/RMS-Gate/internal/whitelist"
 )
 
@@ -49,6 +50,7 @@ type RMSWhitelist struct {
 	dynamicServer *dynamicserver.Manager
 	permission    *permission.Manager
 	loadBalancer  *loadbalancer.LoadBalancer
+	versionRouter *versionrouter.Router
 }
 
 func newRMSWhitelist(ctx context.Context, p *proxy.Proxy) *RMSWhitelist {
@@ -110,7 +112,14 @@ func (r *RMSWhitelist) init() error {
 		}
 	}
 
+	if r.config.VersionRouter != nil && r.config.VersionRouter.Enabled {
+		r.versionRouter = versionrouter.New(r.config.VersionRouter)
+		r.log.Info("Version router enabled", "groups", len(r.config.VersionRouter.Groups))
+	}
+
 	event.Subscribe(r.proxy.Event(), 0, r.onLogin)
+	event.Subscribe(r.proxy.Event(), 0, r.onChooseInitialServer)
+	event.Subscribe(r.proxy.Event(), 0, r.onAvailableCommands)
 	event.Subscribe(r.proxy.Event(), -100, r.onServerPreConnect)
 	event.Subscribe(r.proxy.Event(), -100, r.onCommandExecute)
 
@@ -147,6 +156,52 @@ func convertLoadBalancerConfig(cfg *config.LoadBalancerConfig) *loadbalancer.Con
 			DialTimeoutSeconds:     cfg.HealthCheck.DialTimeoutSeconds,
 		},
 		Servers: servers,
+	}
+}
+
+func (r *RMSWhitelist) onAvailableCommands(e *proxy.PlayerAvailableCommandsEvent) {
+	if r.versionRouter == nil {
+		return
+	}
+	player := e.Player()
+	proto := int(player.Protocol())
+	group := r.versionRouter.GroupForProtocol(proto)
+	if group == nil {
+		return
+	}
+
+	root := e.RootNode()
+	serverNode := root.Children()["server"]
+	if serverNode == nil {
+		return
+	}
+
+	// Rebuild the /server node with only visible servers as literal children
+	root.RemoveChild("server")
+	newServer := brigodier.Literal("server").
+		Executes(serverNode.Command())
+	for _, s := range r.versionRouter.ServersInGroup(group.Name) {
+		s := s
+		newServer = newServer.Then(brigodier.Literal(s))
+	}
+	root.AddChild(newServer.Build())
+}
+
+func (r *RMSWhitelist) onChooseInitialServer(e *proxy.PlayerChooseInitialServerEvent) {
+	if r.versionRouter == nil {
+		return
+	}
+	player := e.Player()
+	proto := int(player.Protocol())
+	group := r.versionRouter.GroupForProtocol(proto)
+	if group == nil {
+		player.Disconnect(&component.Text{Content: fmt.Sprintf(
+			r.config.VersionRouter.MsgUnsupportedVersion, proto)})
+		return
+	}
+	server := r.proxy.Server(group.DefaultServer)
+	if server != nil {
+		e.SetInitialServer(server)
 	}
 }
 
@@ -187,6 +242,17 @@ func (r *RMSWhitelist) onServerPreConnect(e *proxy.ServerPreConnectEvent) {
 	player := e.Player()
 
 	r.log.Info("Checking server", "server", serverName, "player", player.Username())
+
+	// Version router: block cross-group server switches
+	if r.versionRouter != nil {
+		proto := int(player.Protocol())
+		group := r.versionRouter.GroupForProtocol(proto)
+		if group == nil || !r.versionRouter.IsServerInGroup(group.Name, serverName) {
+			e.Deny()
+			player.SendMessage(&component.Text{Content: "Cannot switch to a server in a different version group"})
+			return
+		}
+	}
 
 	if !r.dynamicServer.IsAutoStartServer(serverName) {
 		r.log.Info("Server is not in auto-start list, skipping", "server", serverName)
@@ -269,6 +335,21 @@ func (r *RMSWhitelist) registerCommands() {
 		Executes(command.Command(func(ctx *command.Context) error {
 			return r.cmdHelp(ctx)
 		})))
+
+	r.proxy.Command().Register(
+		brigodier.Literal("server").
+			Executes(command.Command(func(ctx *command.Context) error {
+				return r.cmdServerList(ctx)
+			})).
+			Then(brigodier.Argument("name", brigodier.String).
+				Suggests(command.SuggestFunc(func(c *command.Context, b *brigodier.SuggestionsBuilder) *brigodier.Suggestions {
+					return r.suggestServers(c, b)
+				})).
+				Executes(command.Command(func(ctx *command.Context) error {
+					return r.cmdServerConnect(ctx)
+				})),
+			),
+	)
 
 	r.proxy.Command().Register(brigodier.Literal("lb").
 		Then(brigodier.Literal("status").
@@ -603,4 +684,81 @@ func (r *RMSWhitelist) cmdLBEnable(ctx *command.Context) error {
 		})
 	}
 	return nil
+}
+
+func (r *RMSWhitelist) visibleServers(player proxy.Player) []string {
+	if r.versionRouter == nil {
+		servers := r.proxy.Servers()
+		names := make([]string, 0, len(servers))
+		for _, s := range servers {
+			names = append(names, s.ServerInfo().Name())
+		}
+		return names
+	}
+	proto := int(player.Protocol())
+	group := r.versionRouter.GroupForProtocol(proto)
+	if group == nil {
+		return nil
+	}
+	return r.versionRouter.ServersInGroup(group.Name)
+}
+
+func (r *RMSWhitelist) cmdServerList(ctx *command.Context) error {
+	player, ok := ctx.Source.(proxy.Player)
+	if !ok {
+		return nil
+	}
+	servers := r.visibleServers(player)
+	if len(servers) == 0 {
+		ctx.Source.SendMessage(&component.Text{Content: "No servers available", S: component.Style{Color: color.Yellow}})
+		return nil
+	}
+	ctx.Source.SendMessage(&component.Text{Content: "Available servers:", S: component.Style{Color: color.Gold}})
+	for _, s := range servers {
+		ctx.Source.SendMessage(&component.Text{Content: "  - " + s, S: component.Style{Color: color.Yellow}})
+	}
+	return nil
+}
+
+func (r *RMSWhitelist) cmdServerConnect(ctx *command.Context) error {
+	player, ok := ctx.Source.(proxy.Player)
+	if !ok {
+		return nil
+	}
+	targetName := ctx.String("name")
+
+	if r.versionRouter != nil {
+		proto := int(player.Protocol())
+		group := r.versionRouter.GroupForProtocol(proto)
+		if group == nil || !r.versionRouter.IsServerInGroup(group.Name, targetName) {
+			ctx.Source.SendMessage(&component.Text{
+				Content: fmt.Sprintf("Server '%s' is not available for your version", targetName),
+				S:       component.Style{Color: color.Red},
+			})
+			return nil
+		}
+	}
+
+	server := r.proxy.Server(targetName)
+	if server == nil {
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("Server '%s' not found", targetName),
+			S:       component.Style{Color: color.Red},
+		})
+		return nil
+	}
+
+	player.CreateConnectionRequest(server).ConnectWithIndication(ctx)
+	return nil
+}
+
+func (r *RMSWhitelist) suggestServers(c *command.Context, b *brigodier.SuggestionsBuilder) *brigodier.Suggestions {
+	player, ok := c.Source.(proxy.Player)
+	if !ok {
+		return b.Build()
+	}
+	for _, s := range r.visibleServers(player) {
+		b.Suggest(s)
+	}
+	return b.Build()
 }

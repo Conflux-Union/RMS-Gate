@@ -34,7 +34,7 @@ func NewChecker(log logr.Logger) *Checker {
 type whitelistRequest struct {
 	Username   string `json:"username"`
 	UUID       string `json:"uuid"`
-	ServerTier int    `json:"serverTier"`
+	ServerTier int    `json:"server_tier"`
 }
 
 func (w *Checker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds, serverTier int) CheckResult {

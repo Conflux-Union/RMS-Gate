@@ -16,3 +16,6 @@ Thumbs.db
 .claude-context/
 
 config.yml
+
+rms-gate-config.json
+config.yaml

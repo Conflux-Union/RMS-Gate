@@ -221,13 +221,43 @@ func (lb *LoadBalancer) checkServerBackends(server *ServerInfo) {
 }
 
 // TriggerHealthCheck immediately checks health of all backends for a specific server
+// and marks them healthy immediately if reachable (bypasses HealthyAfterSuccesses requirement)
 func (lb *LoadBalancer) TriggerHealthCheck(serverName string) {
 	server := lb.GetServer(serverName)
 	if server == nil {
 		return
 	}
-	lb.log.V(1).Info("Triggering immediate health check", "server", serverName)
-	lb.checkServerBackends(server)
+	lb.log.Info("Triggering immediate health check", "server", serverName)
+
+	timeout := time.Duration(lb.cfg.HealthCheck.DialTimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 3 * time.Second
+	}
+
+	for _, backend := range server.Backends() {
+		if backend.IsDisabled() {
+			continue
+		}
+
+		latency, err := backend.MCPing(timeout)
+		backend.SetLastCheckTime(time.Now())
+
+		if err != nil {
+			lb.log.V(1).Info("Backend not reachable during immediate check",
+				"server", serverName, "backend", backend.Addr, "error", err)
+			continue
+		}
+
+		// Immediately mark as healthy (bypass HealthyAfterSuccesses)
+		backend.RecordLatency(latency)
+		if !backend.IsHealthy() {
+			backend.SetHealthy(true)
+			backend.ResetTrust()
+			backend.ResetSuccessCount()
+			lb.log.Info("Backend marked healthy (immediate)",
+				"server", serverName, "backend", backend.Addr, "latency", latency)
+		}
+	}
 }
 
 func (lb *LoadBalancer) GetServer(name string) *ServerInfo {
