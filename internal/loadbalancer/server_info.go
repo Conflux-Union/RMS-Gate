@@ -16,6 +16,7 @@ type ServerInfo struct {
 	strategy               Strategy
 	jitterThreshold        float64
 	dialTimeout            time.Duration
+	healthCheckTimeout     time.Duration
 	unhealthyAfterFailures int
 
 	defaultAddr net.Addr
@@ -28,6 +29,7 @@ func NewServerInfo(
 	strategy Strategy,
 	jitterThreshold float64,
 	dialTimeout time.Duration,
+	healthCheckTimeout time.Duration,
 	unhealthyAfterFailures int,
 	history *HistoryManager,
 ) *ServerInfo {
@@ -43,6 +45,7 @@ func NewServerInfo(
 		strategy:               strategy,
 		jitterThreshold:        jitterThreshold,
 		dialTimeout:            dialTimeout,
+		healthCheckTimeout:     healthCheckTimeout,
 		unhealthyAfterFailures: unhealthyAfterFailures,
 		defaultAddr:            defaultAddr,
 		history:                history,
@@ -60,7 +63,11 @@ func (s *ServerInfo) Addr() net.Addr {
 func (s *ServerInfo) Dial(ctx context.Context, player proxy.Player) (net.Conn, error) {
 	backend := s.strategy.Select(s.backends, s.jitterThreshold, s.history)
 	if backend == nil {
-		return nil, fmt.Errorf("no available backend for server %s", s.name)
+		s.refreshBackends()
+		backend = s.strategy.Select(s.backends, s.jitterThreshold, s.history)
+		if backend == nil {
+			return nil, fmt.Errorf("no available backend for server %s", s.name)
+		}
 	}
 
 	start := time.Now()
@@ -105,6 +112,47 @@ func (s *ServerInfo) Backends() []*Backend {
 
 func (s *ServerInfo) Strategy() Strategy {
 	return s.strategy
+}
+
+type backendRefreshResult struct {
+	backend   *Backend
+	latency   time.Duration
+	err       error
+	recovered bool
+}
+
+func (s *ServerInfo) refreshBackends() []backendRefreshResult {
+	backends := make([]*Backend, 0, len(s.backends))
+	for _, backend := range s.backends {
+		if !backend.IsDisabled() {
+			backends = append(backends, backend)
+		}
+	}
+
+	results := make([]backendRefreshResult, len(backends))
+	var wg sync.WaitGroup
+	for i, backend := range backends {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			latency, err := backend.MCPing(s.healthCheckTimeout)
+			backend.SetLastCheckTime(time.Now())
+			result := backendRefreshResult{backend: backend, latency: latency, err: err}
+			if err == nil {
+				backend.RecordLatency(latency)
+				if !backend.IsHealthy() {
+					backend.SetHealthy(true)
+					backend.ResetTrust()
+					backend.ResetSuccessCount()
+					result.recovered = true
+				}
+			}
+			results[i] = result
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 type trackedConn struct {

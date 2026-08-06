@@ -99,6 +99,10 @@ func (lb *LoadBalancer) registerServer(name string, cfg *ServerConfig) error {
 	if dialTimeout == 0 {
 		dialTimeout = 5 * time.Second
 	}
+	healthCheckTimeout := time.Duration(lb.cfg.HealthCheck.DialTimeoutSeconds) * time.Second
+	if healthCheckTimeout == 0 {
+		healthCheckTimeout = 3 * time.Second
+	}
 
 	serverInfo := NewServerInfo(
 		name,
@@ -106,6 +110,7 @@ func (lb *LoadBalancer) registerServer(name string, cfg *ServerConfig) error {
 		strategy,
 		lb.cfg.HealthCheck.JitterThreshold,
 		dialTimeout,
+		healthCheckTimeout,
 		lb.cfg.HealthCheck.UnhealthyAfterFailures,
 		lb.history,
 	)
@@ -229,33 +234,15 @@ func (lb *LoadBalancer) TriggerHealthCheck(serverName string) {
 	}
 	lb.log.Info("Triggering immediate health check", "server", serverName)
 
-	timeout := time.Duration(lb.cfg.HealthCheck.DialTimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 3 * time.Second
-	}
-
-	for _, backend := range server.Backends() {
-		if backend.IsDisabled() {
-			continue
-		}
-
-		latency, err := backend.MCPing(timeout)
-		backend.SetLastCheckTime(time.Now())
-
-		if err != nil {
+	for _, result := range server.refreshBackends() {
+		if result.err != nil {
 			lb.log.V(1).Info("Backend not reachable during immediate check",
-				"server", serverName, "backend", backend.Addr, "error", err)
+				"server", serverName, "backend", result.backend.Addr, "error", result.err)
 			continue
 		}
-
-		// Immediately mark as healthy (bypass HealthyAfterSuccesses)
-		backend.RecordLatency(latency)
-		if !backend.IsHealthy() {
-			backend.SetHealthy(true)
-			backend.ResetTrust()
-			backend.ResetSuccessCount()
+		if result.recovered {
 			lb.log.Info("Backend marked healthy (immediate)",
-				"server", serverName, "backend", backend.Addr, "latency", latency)
+				"server", serverName, "backend", result.backend.Addr, "latency", result.latency)
 		}
 	}
 }
