@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	APIUrl            string               `json:"apiUrl"`
+	APIKey            string               `json:"apiKey"`
 	TimeoutSeconds    int                  `json:"timeoutSeconds"`
 	ServerTier        int                  `json:"serverTier"`
 	MsgNotInWhitelist string               `json:"msgNotInWhitelist"`
@@ -85,7 +86,8 @@ type DynamicServerConfig struct {
 
 func defaultConfig() *Config {
 	return &Config{
-		APIUrl:            "http://localhost:8080/api/whitelist",
+		APIUrl:            "http://localhost:8080",
+		APIKey:            "your-api-key",
 		TimeoutSeconds:    10,
 		ServerTier:        1,
 		MsgNotInWhitelist: "您当前不在白名单中",

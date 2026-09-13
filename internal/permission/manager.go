@@ -19,6 +19,7 @@ type Manager struct {
 	client        *http.Client
 	log           logr.Logger
 	baseURL       string
+	apiKey        string
 	cache         map[string]int // username -> permission_level
 	cacheMu       sync.RWMutex
 	cacheExpiry   time.Time
@@ -34,11 +35,12 @@ type permissionResponse struct {
 	} `json:"users"`
 }
 
-func NewManager(log logr.Logger, baseURL string, cacheTTLSeconds int, adminCommands []string) *Manager {
+func NewManager(log logr.Logger, baseURL, apiKey string, cacheTTLSeconds int, adminCommands []string) *Manager {
 	return &Manager{
 		client:        &http.Client{Timeout: 10 * time.Second},
 		log:           log.WithName("permission"),
 		baseURL:       strings.TrimSuffix(baseURL, "/"),
+		apiKey:        apiKey,
 		cache:         make(map[string]int),
 		cacheTTL:      time.Duration(cacheTTLSeconds) * time.Second,
 		adminCommands: adminCommands,
@@ -51,6 +53,7 @@ func (p *Manager) fetchPermissions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	req.Header.Set("X-API-Key", p.apiKey)
 
 	resp, err := p.client.Do(req)
 	if err != nil {

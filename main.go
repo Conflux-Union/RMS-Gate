@@ -66,7 +66,7 @@ func (r *RMSWhitelist) init() error {
 
 	configDir := getPluginDataDir()
 	r.config = config.LoadConfig(configDir, r.log)
-	r.checker = whitelist.NewChecker(r.log)
+	r.checker = whitelist.NewChecker(r.log, r.config.APIKey)
 
 	if r.config.MCSManager != nil && r.config.DynamicServer != nil {
 		mcsCfg := &mcsmanager.Config{
@@ -91,7 +91,7 @@ func (r *RMSWhitelist) init() error {
 	}
 
 	if r.config.Permission != nil && r.config.Permission.Enabled {
-		r.permission = permission.NewManager(r.log, r.config.APIUrl, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
+		r.permission = permission.NewManager(r.log, r.config.APIUrl, r.config.APIKey, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
 		r.log.Info("Permission management enabled", "adminCommands", r.config.Permission.AdminCommands)
 	}
 

@@ -22,12 +22,14 @@ const (
 type Checker struct {
 	client *http.Client
 	log    logr.Logger
+	apiKey string
 }
 
-func NewChecker(log logr.Logger) *Checker {
+func NewChecker(log logr.Logger, apiKey string) *Checker {
 	return &Checker{
 		client: &http.Client{},
 		log:    log,
+		apiKey: apiKey,
 	}
 }
 
@@ -60,6 +62,7 @@ func (w *Checker) Check(ctx context.Context, username, uuid, baseURL string, tim
 		return ServerError
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", w.apiKey)
 
 	resp, err := w.client.Do(req)
 	if err != nil {
